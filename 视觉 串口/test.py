@@ -1,0 +1,131 @@
+import cv2
+import numpy as np
+
+# 定义一个空的回调函数，用于滑动条（Trackbar）的回调参数
+def nothing(x):
+    pass
+
+cap = cv2.VideoCapture(0) # 连接 初始化摄像头 0为电脑摄像头
+
+#设置显示高宽
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # 设置宽为320
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240) # 设置高为240
+
+
+cv2.namedWindow("Trackbars",cv2.WINDOW_NORMAL) # 创建一个窗口用于放置滑动条
+cv2.namedWindow("Camera",cv2.WINDOW_NORMAL)
+cv2.namedWindow("Mask",cv2.WINDOW_NORMAL)
+cv2.namedWindow("Gray",cv2.WINDOW_NORMAL)
+
+cv2.createTrackbar("H Min1", "Trackbars", 0, 179, nothing)# 创建滑动条，控制HSV的H S V的最小值和最大值，H的范围是0-179，S和V的范围是0-255
+cv2.createTrackbar("S Min", "Trackbars", 60, 255, nothing) #H色相 S饱和度 V明度
+cv2.createTrackbar("V Min", "Trackbars", 0, 255, nothing)
+cv2.createTrackbar("H Max1", "Trackbars", 10, 179, nothing)#低段红
+cv2.createTrackbar("S Max", "Trackbars", 255, 255, nothing)
+cv2.createTrackbar("V Max", "Trackbars", 255, 255, nothing)
+cv2.createTrackbar("H Min2","Trackbars",169,179,nothing)#高段红
+cv2.createTrackbar("H Max2", "Trackbars", 179, 179, nothing)
+
+# 线框识别调整
+cv2.createTrackbar("low","Camera",30,255,nothing)
+cv2.createTrackbar("high","Camera",100,255,nothing)
+
+while True:
+    ret, frame = cap.read()
+
+    kernel = np.ones((5,5),np.uint8) #定义一个5x5的卷积核
+
+    #先将图像转化为灰度，再高斯模糊去噪
+    gray_img = cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY) # 转化为灰度图
+    gray_Biur_img = cv2.GaussianBlur(gray_img,(5,5),0) #高斯模糊去噪
+
+    #先高斯模糊去噪，再转化为HSV
+    blurred = cv2.GaussianBlur(frame,(5,5),0) #高斯模糊去噪
+    hsv_img = cv2.cvtColor(blurred,cv2.COLOR_BGR2HSV) # 转化为HSV
+
+    if not ret:
+        print("读取失败")
+        break
+        
+
+    #灰度寻找线框
+    Low = cv2.getTrackbarPos("low","Camera") #获取当前canny参数
+    High = cv2.getTrackbarPos("high","Camera")
+
+    edges = cv2.Canny(gray_Biur_img,Low,High) #提取边缘
+    edges = cv2.dilate(edges,kernel,iterations=1)
+    contours, _ = cv2.findContours(edges,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE) #找出轮廓
+
+    valid_rects = [] #收集最后内外框
+
+    for contour in contours:
+        area = cv2.contourArea(contour) #计算每个轮廓的面积
+        if area > 1000: #过滤小的噪点
+            perimeter = cv2.arcLength(contour,True) #计算周长
+            approx = cv2.approxPolyDP(contour,0.02*perimeter,True) #多边形拟合
+
+            if len(approx) == 4: #如果拟合的结果恰好为4，即刚好为矩形线框
+                valid_rects.append((area, approx))
+    
+    valid_rects.sort(key=lambda x:x[0],reverse=True)
+
+    if len(valid_rects) >= 1: #确保识别到
+        outer_approx = valid_rects[0][1]
+        cv2.drawContours(frame,[outer_approx],-1,(255,0,0),2) #蓝色为外框
+
+    if len(valid_rects) >= 2:
+        inner_approx = valid_rects[1][1]
+        cv2.drawContours(frame,[inner_approx],-1,(0,0,255),2) #红色为内框
+
+    #HSV找出红色激光位置
+    H_Min1 = cv2.getTrackbarPos("H Min1","Trackbars") # 获取当前H的最小值
+    S_Min = cv2.getTrackbarPos("S Min","Trackbars") # 获取当前S的最小值
+    V_Min = cv2.getTrackbarPos("V Min","Trackbars") # 获取当前V的最小值
+    H_Max1 = cv2.getTrackbarPos("H Max1","Trackbars") # 获取当前H的最大值
+    S_Max = cv2.getTrackbarPos("S Max","Trackbars") # 获取当前S的最大值
+    V_Max = cv2.getTrackbarPos("V Max","Trackbars") # 获取当前V的最大值
+    H_Min2 = cv2.getTrackbarPos("H Min2","Trackbars") #特取高段红
+    H_Max2 = cv2.getTrackbarPos("H Max2","Trackbars")
+    
+    #低段红
+    lower_bound1 = np.array([H_Min1,S_Min,V_Min]) #定义HSV的最小值
+    upper_bound1 = np.array([H_Max1,S_Max,V_Max]) #定义HSV的最大值
+    #高段红
+    lower_bound2 = np.array([H_Min2,S_Min,V_Min]) #定义HSV的最小值
+    upper_bound2 = np.array([H_Max2,S_Max,V_Max]) #定义HSV的最大值
+
+    #最终需要调节HSCV的范围来创建掩膜，目的是将特特定的红色光点提取出来
+    mask1 = cv2.inRange(hsv_img,lower_bound1,upper_bound1) #根据HSV的范围创建掩膜 范围内为白255，范围外为黑0
+    mask2 = cv2.inRange(hsv_img,lower_bound2,upper_bound2)
+
+    #合并mask
+    mask = cv2.bitwise_or(mask1,mask2)
+
+    #定义一个5x5的卷积核，对HSV的掩膜进行腐蚀和膨胀操作，去除噪点
+    mask = cv2.erode(mask,kernel,iterations=1) #腐蚀操作，去除小的白色噪点 防止识别到不需要的红点，但同时会使得目标变小
+    mask = cv2.dilate(mask,kernel,iterations=2) #膨胀操作，第一次恢复目标大小，第二次使得目标变大，增强识别效果
+
+    #找激光轮廓 算出重心
+    contours_mask , _ = cv2.findContours(mask,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours_mask:
+        if cv2.contourArea(contour) > 20:
+            M = cv2.moments(contour)
+            if M["m00"] != 0:
+                cx = int(M["m10"]/M["m00"])
+                cy = int(M["m01"]/M["m00"])
+
+                #在重心画一个绿色的十字准星
+                cv2.drawMarker(frame,(cx,cy),(0,255,0),cv2.MARKER_CROSS,20,2)
+                cv2.putText(frame,f"laser({cx},{cy})",(cx+10,cy-10),cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,255,0),2)# 显示坐标
+
+    cv2.imshow("Trackbars",hsv_img)
+    cv2.imshow("Camera", frame)
+    cv2.imshow("Mask",mask)
+    cv2.imshow("Gray",gray_img)
+    cv2.imshow("Canny",edges)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):#比较输入是否为q 按位与取后八位 都是1才为1
+        break
+
+cap.release()
+cv2.destroyAllWindows()
