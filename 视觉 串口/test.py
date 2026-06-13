@@ -5,6 +5,21 @@ import numpy as np
 def nothing(x):
     pass
 
+#顺序排列四个顶点 左上开始顺时针
+def order_points(pts):
+    rect = np.zeros((4,2),dtype="float32")
+    pts = pts.reshape(4,2) #初始化
+
+    s = pts.sum(axis=1) #单个xy算总
+    rect[0] = pts[np.argmin(s)] #左上  np.argmin()得到的为索引
+    rect[2] = pts[np.argmax(s)] #右下
+
+    diff = np.diff(pts,axis=1) #单个y-x
+    rect[1] = pts[np.argmax(diff)] #右上
+    rect[3] = pts[np.argmin(diff)] #左下
+
+    return rect
+
 cap = cv2.VideoCapture(0) # 连接 初始化摄像头 0为电脑摄像头
 
 #设置显示高宽
@@ -61,22 +76,31 @@ while True:
     for contour in contours:
         area = cv2.contourArea(contour) #计算每个轮廓的面积
         if area > 1000: #过滤小的噪点
-            perimeter = cv2.arcLength(contour,True) #计算周长
+            perimeter = cv2.arcLength(contour,True) #计算周长 True强行闭合
             approx = cv2.approxPolyDP(contour,0.02*perimeter,True) #多边形拟合
 
             if len(approx) == 4: #如果拟合的结果恰好为4，即刚好为矩形线框
                 valid_rects.append((area, approx))
     
+    #按面积排 大到小
     valid_rects.sort(key=lambda x:x[0],reverse=True)
 
-    if len(valid_rects) >= 1: #确保识别到
-        outer_approx = valid_rects[0][1]
-        cv2.drawContours(frame,[outer_approx],-1,(255,0,0),2) #蓝色为外框
-
     if len(valid_rects) >= 2:
-        inner_approx = valid_rects[1][1]
-        cv2.drawContours(frame,[inner_approx],-1,(0,0,255),2) #红色为内框
+        outer_approx = valid_rects[0][1] #外框
+        inner_approx = valid_rects[1][1] #内框
 
+        #内外框顶点排序
+        ordered_outer = order_points(outer_approx)
+        ordered_inner = order_points(inner_approx)
+
+        #中线
+        center_line = (ordered_outer + ordered_inner) / 2.0
+        center_line = center_line.astype("int32") #中线顶点坐标
+
+        cv2.drawContours(frame,[outer_approx],-1,(255,0,0),1) #外框
+        cv2.drawContours(frame,[inner_approx],-1,(0,0,255),1) #内框
+        cv2.drawContours(frame,[center_line],-1,(0,255,0),3) #中线
+    
     #HSV找出红色激光位置
     H_Min1 = cv2.getTrackbarPos("H Min1","Trackbars") # 获取当前H的最小值
     S_Min = cv2.getTrackbarPos("S Min","Trackbars") # 获取当前S的最小值
